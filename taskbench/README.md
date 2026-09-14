@@ -22,6 +22,13 @@
 
 ## What's New
 
++  [2026.09.14] Fork-local dependency bump for use in the `multi-agent-coordination`
+   capability-brief offloading study. `requirements.txt` now targets current package
+   versions (the original pins were ~2023-vintage). `evaluate.py`'s use of the removed
+   `datasets.load_metric` was replaced with the `evaluate` package's `evaluate.load`,
+   and the script itself was renamed to `task_eval.py` because it shadowed the
+   `evaluate` package it now imports. See `batch_evaluate.sh` and the Evaluation
+   section below for the updated invocation.
 +  [2023.11.30] We release TaskBench for evaluating the task automation capability of LLMs.
    + The code and datasets are available at [TaskBench](#).
    + The paper is available at [TaskBench: Benchmarking Large Language Models for Task Automation](https://arxiv.org/abs/2311.18760).
@@ -174,7 +181,7 @@ python inference.py \
 With the predictions in place, you can now evaluate the LLMs. The predictions file is saved by default in the dataset's folder under the name `predictions`. Execute the following command to calculate the evaluation metrics (saved in the `metrics` folder):
 
 ```bash
-python evaluate.py \
+python task_eval.py \
     --data_dir data_multimedia \
     --prediction_dir $prediction_dir \
     --llm gpt-4 \
@@ -184,6 +191,10 @@ python evaluate.py \
     --dependency_type resource \
     -m all
 ```
+
+> Note: this script was renamed from `evaluate.py` to `task_eval.py` to avoid
+> shadowing the `evaluate` package it imports for the rouge/bertscore metrics
+> (see "Dependency updates" below).
 
 ## Dataset Construction with Back-Instruct
 

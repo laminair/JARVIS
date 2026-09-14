@@ -23,5 +23,5 @@ do
         continue
     fi
     echo $llm
-    python evaluate.py --data_dir $data_dir --prediction_dir $prediction_dir --llm $llm --splits all --n_tools all --mode add --dependency_type $dependency_type -m all 
+    python task_eval.py --data_dir $data_dir --prediction_dir $prediction_dir --llm $llm --splits all --n_tools all --mode add --dependency_type $dependency_type -m all
 done

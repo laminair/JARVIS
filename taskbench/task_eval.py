@@ -3,7 +3,7 @@ import numpy as np
 from scipy.optimize import linear_sum_assignment
 import json
 import click
-from datasets import load_metric
+import evaluate as hf_evaluate
 import Levenshtein
 from sklearn.metrics import precision_recall_fscore_support as prfs
 import warnings
@@ -471,14 +471,14 @@ def evaluate(data_dir, prediction_dir, llm, split, n_tool, metric, tool_desc, to
         return
 
     if "rouge" in metric:
-        rouge = load_metric("rouge")
+        rouge = hf_evaluate.load("rouge")
         rouge_scores = rouge.compute(predictions=predcition_task_steps, references=label_task_steps, use_aggregator=True)
         for key in rouge_scores:
-            logger.info(f"Step {key}: {rouge_scores[key].mid.fmeasure}")
-            metric_dict[f"step_{key}"] = rouge_scores[key].mid.fmeasure
+            logger.info(f"Step {key}: {rouge_scores[key]}")
+            metric_dict[f"step_{key}"] = rouge_scores[key]
 
     if "bertscore" in metric:
-        bertscore = load_metric("bertscore")
+        bertscore = hf_evaluate.load("bertscore")
         bertscore_scores = bertscore.compute(predictions=predcition_task_steps, references=label_task_steps, model_type="roberta-large")
         for key in bertscore_scores:
             if key in ["precision", "recall", "f1"]:
