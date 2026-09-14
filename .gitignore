@@ -164,3 +164,9 @@ dmypy.json
 # Pyre type checker
 .pyre/
 
+
+# Harness-generated TaskBench run artifacts (from the multi-agent-coordination fork)
+taskbench/data_*/predictions/
+taskbench/data_*/metrics/
+taskbench/data_*/.profiling_view_*/
+taskbench/data_*/user_requests.profiling_only.json
