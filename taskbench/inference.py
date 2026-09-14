@@ -149,6 +149,7 @@ def main(data_dir, temperature, top_p, api_addr, api_key, api_port, multiworker,
     
     loop = asyncio.get_event_loop()
 
+    results = []
     if log_first_detail:
         tasks = [inference_wrapper(inputs[0], url, header, temperature, top_p, tool_string, wf, llm, demos, reformat, reformat_by, dependency_type, log_detail=True)]
         results = loop.run_until_complete(asyncio.gather(*tasks, return_exceptions=True))
