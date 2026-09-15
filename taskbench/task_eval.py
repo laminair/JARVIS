@@ -540,7 +540,15 @@ def evaluate(data_dir, prediction_dir, llm, split, n_tool, metric, tool_desc, to
         tuple_predcition_links = []
         for label_link, predcition_link in zip(label_links, predcition_links):
             tuple_label_links.append([(link["source"], link["target"]) for link in label_link])
-            tuple_predcition_links.append([(link["source"], link["target"]) for link in predcition_link])
+            # Real (non-stub) model output can put malformed entries in
+            # task_links -- e.g. a bare string instead of a {source,target}
+            # dict. Ignore those, same as the rest of this function ignores
+            # unparseable model output, rather than crashing the whole run.
+            tuple_predcition_links.append([
+                (link["source"], link["target"])
+                for link in predcition_link
+                if isinstance(link, dict) and "source" in link and "target" in link
+            ])
         
         gt_flat, pred_flat = flatten(tuple_label_links, tuple_predcition_links)
 
