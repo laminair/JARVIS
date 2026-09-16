@@ -70,6 +70,19 @@ def ratio_levenshtein(x, y):
     return total / n
 
 
+def binary_prfs(gt_flat, pred_flat):
+    # sklearn's average="binary" raises ValueError on a zero-length input
+    # rather than returning a score. This happens for real (not just stub)
+    # model output on splits where every task genuinely has nothing to
+    # predict here -- e.g. link F1 on the "single" split, where single-tool
+    # tasks have no dependency links by construction, so a model that
+    # correctly predicts no links leaves both gt_flat and pred_flat empty.
+    # Nothing expected and nothing predicted is a trivial perfect match.
+    if len(gt_flat) == 0 and len(pred_flat) == 0:
+        return (1.0, 1.0, 1.0)
+    return prfs(gt_flat, pred_flat, average="binary")[:-1]
+
+
 def flatten(gt, pred, types = None):
     assert len(gt) == len(pred)
 
@@ -516,12 +529,12 @@ def evaluate(data_dir, prediction_dir, llm, split, n_tool, metric, tool_desc, to
 
 
         gt_flat, pred_flat = flatten(label_task_arg_names, predcition_task_arg_names)
-        micro = prfs(gt_flat, pred_flat, average="binary")[:-1]
+        micro = binary_prfs(gt_flat, pred_flat)
         logger.info(f"Argument Task-ArgName Binary F1: [ No Matching ]: {micro[-1]}")
         metric_dict["argument_task_argname_binary_f1_no_matching"] = micro[-1]
 
         gt_flat, pred_flat = flatten(label_task_arg_name_values, predcition_task_arg_name_values)
-        micro = prfs(gt_flat, pred_flat, average="binary")[:-1]
+        micro = binary_prfs(gt_flat, pred_flat)
         logger.info(f"Argument Task-ArgName-Value Binary F1 [ No Matching ]: {micro[-1]}")
         metric_dict["argument_task_argname_value_binary_f1_no_matching"] = micro[-1]
 
@@ -553,7 +566,7 @@ def evaluate(data_dir, prediction_dir, llm, split, n_tool, metric, tool_desc, to
         gt_flat, pred_flat = flatten(tuple_label_links, tuple_predcition_links)
 
 
-        micro = prfs(gt_flat, pred_flat, average="binary")[:-1]
+        micro = binary_prfs(gt_flat, pred_flat)
         logger.info(f"Link Binary F1: {micro[-1]}")
         metric_dict["link_binary_f1"] = micro[-1]
 
