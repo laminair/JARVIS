@@ -37,7 +37,8 @@ class ContentFormatError(Exception):
 @click.option("--log_first_detail", type=bool, default=False)
 @click.option("--max_tokens", type=int, default=2000)
 @click.option("--timeout", type=int, default=300, help="Per-request timeout in seconds.")
-def main(data_dir, temperature, top_p, api_addr, api_key, api_port, multiworker, llm, use_demos, reformat, reformat_by, tag, dependency_type, log_first_detail, max_tokens, timeout):
+@click.option("--retry_failed", type=bool, default=True, help="On resume, retry tasks the model already answered unusably.")
+def main(data_dir, temperature, top_p, api_addr, api_key, api_port, multiworker, llm, use_demos, reformat, reformat_by, tag, dependency_type, log_first_detail, max_tokens, timeout, retry_failed):
     assert dependency_type in ["resource", "temporal"], "Dependency type not supported"
     if dependency_type == "resource":
         assert data_dir != "data_dailylifeapis", "Resource dependency type only support data_huggingface and data_multimedia"
@@ -63,6 +64,20 @@ def main(data_dir, temperature, top_p, api_addr, api_key, api_port, multiworker,
             has_inferenced.append(data["id"])
         rf.close()
 
+    # Retrying on resume makes a preempted run best-of-N on exactly the tasks
+    # the model found hardest. With --retry_failed False, tasks whose failed
+    # attempt got a model response (bad JSON, output cap) are skipped; failures
+    # with no response (connection or server errors) are still retried.
+    usage_name = f"{prediction_dir}/{llm}.usage.json"
+    answered_failed = set()
+    if not retry_failed and os.path.exists(usage_name):
+        with open(usage_name, "r") as usage_rf:
+            for line in usage_rf:
+                record = json.loads(line)
+                if not record.get("ok") and "finish_reason" in record and record["id"] not in has_inferenced:
+                    answered_failed.add(record["id"])
+        has_inferenced += answered_failed
+
     rf_ur = open(f"{data_dir}/user_requests.json", "r")
     inputs = []
     for line in rf_ur:
@@ -74,7 +89,7 @@ def main(data_dir, temperature, top_p, api_addr, api_key, api_port, multiworker,
     wf = open(wf_name, "a")
     # One line per request, failed ones included, so token cost and cap hits
     # (finish_reason == "length") can be counted after the fact.
-    uf = open(f"{prediction_dir}/{llm}.usage.json", "a")
+    uf = open(usage_name, "a")
 
     tool_list = json.load(open(f"{data_dir}/tool_desc.json", "r"))["nodes"]
     if "input-type" not in tool_list[0]:
@@ -151,6 +166,8 @@ def main(data_dir, temperature, top_p, api_addr, api_key, api_port, multiworker,
         return
     else:
         logger.info(f"Detected {len(has_inferenced)} has been inferenced,")
+        if answered_failed:
+            logger.info(f"Skipping {len(answered_failed)} tasks that already failed with a model response")
         logger.info(f"Start inferencing {len(inputs)} tasks...")
     
     loop = asyncio.get_event_loop()
