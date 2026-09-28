@@ -1,6 +1,7 @@
 
 import os
 import json
+import time
 import click
 import asyncio
 import aiohttp
@@ -34,7 +35,9 @@ class ContentFormatError(Exception):
 @click.option("--tag", type=bool, default=False)
 @click.option("--dependency_type", type=str, default="resource")
 @click.option("--log_first_detail", type=bool, default=False)
-def main(data_dir, temperature, top_p, api_addr, api_key, api_port, multiworker, llm, use_demos, reformat, reformat_by, tag, dependency_type, log_first_detail):
+@click.option("--max_tokens", type=int, default=2000)
+@click.option("--timeout", type=int, default=300, help="Per-request timeout in seconds.")
+def main(data_dir, temperature, top_p, api_addr, api_key, api_port, multiworker, llm, use_demos, reformat, reformat_by, tag, dependency_type, log_first_detail, max_tokens, timeout):
     assert dependency_type in ["resource", "temporal"], "Dependency type not supported"
     if dependency_type == "resource":
         assert data_dir != "data_dailylifeapis", "Resource dependency type only support data_huggingface and data_multimedia"
@@ -69,7 +72,10 @@ def main(data_dir, temperature, top_p, api_addr, api_key, api_port, multiworker,
     rf_ur.close()
 
     wf = open(wf_name, "a")
-    
+    # One line per request, failed ones included, so token cost and cap hits
+    # (finish_reason == "length") can be counted after the fact.
+    uf = open(f"{prediction_dir}/{llm}.usage.json", "a")
+
     tool_list = json.load(open(f"{data_dir}/tool_desc.json", "r"))["nodes"]
     if "input-type" not in tool_list[0]:
         assert dependency_type == "temporal", "Tool type is not ignored, but the tool list does not contain input-type and output-type"
@@ -138,7 +144,7 @@ def main(data_dir, temperature, top_p, api_addr, api_key, api_port, multiworker,
 
     async def inference_wrapper(input, url, header, temperature, top_p, tool_string, wf, llm, demos, reformat, reformat_by, dependency_type, log_detail = False):
         async with sem:
-            await inference(input, url, header, temperature, top_p, tool_string, wf, llm, demos, reformat, reformat_by, dependency_type, log_detail)
+            await inference(input, url, header, temperature, top_p, tool_string, wf, llm, demos, reformat, reformat_by, dependency_type, max_tokens, timeout, uf, log_detail)
 
     if len(inputs) == 0:
         logger.info("All Completed!")
@@ -171,7 +177,7 @@ def main(data_dir, temperature, top_p, api_addr, api_key, api_port, multiworker,
     logger.info(f"Failed: {len(failed)}")
     loop.close()
 
-async def inference(input, url, header, temperature, top_p, tool_string, wf, llm, demos, reformat, reformat_by, dependency_type, log_detail = False):
+async def inference(input, url, header, temperature, top_p, tool_string, wf, llm, demos, reformat, reformat_by, dependency_type, max_tokens, timeout, uf, log_detail = False):
     user_request = input["user_request"]
     if dependency_type == "resource":
         prompt = """\n# GOAL #: Based on the above tools, I want you generate task steps and task nodes to solve the # USER REQUEST #. The format must in a strict JSON format, like: {"task_steps": [ step description of one or more steps ], "task_nodes": [{"task": "tool name must be from # TOOL LIST #", "arguments": [ a concise list of arguments for the tool. Either original text, or user-mentioned filename, or tag '<node-j>' (start from 0) to refer to the output of the j-th node. ]}]} """
@@ -200,35 +206,53 @@ async def inference(input, url, header, temperature, top_p, tool_string, wf, llm
         "top_p": top_p,
         "frequency_penalty": 0,
         "presence_penalty": 1.05,
-        "max_tokens": 2000,
+        "max_tokens": max_tokens,
         "stream": False,
         "stop": None
     })
+    usage = {"id": input["id"]}
+    start = time.monotonic()
     try:
-        result = await get_response(url, header, payload, input['id'], reformat, reformat_by, dependency_type, log_detail)
+        result = await get_response(url, header, payload, input['id'], reformat, reformat_by, dependency_type, timeout, usage, log_detail)
     except Exception as e:
         logger.info(f"Failed #id {input['id']}: {type(e)} {e}")
+        write_usage(uf, usage, start, ok=False)
         raise e
+    write_usage(uf, usage, start, ok=True)
     logger.info(f"Success #id {input['id']}")
     input["result"] = result
     wf.write(json.dumps(input) + "\n")
     wf.flush()
 
-async def get_response(url, header, payload, id, reformat, reformat_by, dependency_type, log_detail=False):
+def write_usage(uf, usage, start, ok):
+    usage["latency_s"] = time.monotonic() - start
+    usage["ok"] = ok
+    uf.write(json.dumps(usage) + "\n")
+    uf.flush()
+
+def record_usage(usage, resp):
+    for key in ("prompt_tokens", "completion_tokens"):
+        usage[key] = usage.get(key, 0) + (resp.get("usage") or {}).get(key, 0)
+    usage["finish_reason"] = resp["choices"][0].get("finish_reason")
+
+async def get_response(url, header, payload, id, reformat, reformat_by, dependency_type, timeout, usage, log_detail=False):
     async with aiohttp.ClientSession() as session:
-        async with session.post(url, headers=header, data=payload, timeout=300) as response:
+        async with session.post(url, headers=header, data=payload, timeout=timeout) as response:
             resp = await response.json()
 
     if response.status == 429:
         raise RateLimitError(f"{resp}")
     if response.status != 200:
         raise Exception(f"{resp}")
-    
+    record_usage(usage, resp)
+
     if log_detail:
         logger.info(json.loads(payload)["messages"][0]["content"])
         logger.info(resp["choices"][0]["message"]["content"])
 
-    oring_content = resp["choices"][0]["message"]["content"]
+    # A server-side reasoning parser returns content None when the output cap
+    # is hit mid-reasoning; that is a format failure, not a crash.
+    oring_content = resp["choices"][0]["message"]["content"] or ""
     oring_content = oring_content.replace("\n", "")
     oring_content = oring_content.replace("\_", "_")
     content = oring_content.replace("\\", "")
@@ -265,19 +289,20 @@ async def get_response(url, header, payload, id, reformat, reformat_by, dependen
             payload = json.dumps(payload)
             
             async with aiohttp.ClientSession() as session:
-                async with session.post(url, headers=header, data=payload, timeout=120) as response:
+                async with session.post(url, headers=header, data=payload, timeout=timeout) as response:
                     resp = await response.json()
 
             if response.status == 429:
                 raise RateLimitError(f"{resp}")
             if response.status != 200:
                 raise Exception(f"{resp}")
-            
+            record_usage(usage, resp)
+
             if log_detail:
                 logger.info(json.loads(payload)["messages"][0]["content"])
                 logger.info(resp["choices"][0]["message"]["content"])
 
-            content = resp["choices"][0]["message"]["content"]
+            content = resp["choices"][0]["message"]["content"] or ""
             content = content.replace("\n", "")
             content = content.replace("\_", "_")
             start_pos = content.find("STRICT JSON FORMAT #:")
