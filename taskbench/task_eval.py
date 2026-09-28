@@ -188,7 +188,8 @@ def get_content_type(content):
 @click.option("--llm", default="gpt-3.5-turbo")
 @click.option("--dependency_type", type=str, default="resource")
 @click.option("--prompting", default="cot")
-def main(data_dir, prediction_dir, save_dir, splits, n_tools, mode, metric, llm, dependency_type, alignment, prompting):
+@click.option("--score_ids", default=None, help="A JSON-lines file with an id per line (e.g. a user_requests.json). Score exactly these tasks; a task with no prediction counts as an empty graph. Without it, only tasks that have a prediction are scored.")
+def main(data_dir, prediction_dir, save_dir, splits, n_tools, mode, metric, llm, dependency_type, alignment, prompting, score_ids):
     assert dependency_type in ["resource", "temporal"], "Dependency type not supported"
     args = locals()
     
@@ -260,12 +261,12 @@ def main(data_dir, prediction_dir, save_dir, splits, n_tools, mode, metric, llm,
     for s, n in group:
         logger.info("-"*15)
         logger.info(f"Tools Number: {n}, Task Split: {s}")
-        evaluate(data_dir, prediction_dir, llm, s, n, metric, tool_desc, tool_map, tool_output_type_map, tool_map_reverse, all_metric_dict, dependency_type=dependency_type, alignment=alignment)
+        evaluate(data_dir, prediction_dir, llm, s, n, metric, tool_desc, tool_map, tool_output_type_map, tool_map_reverse, all_metric_dict, dependency_type=dependency_type, alignment=alignment, score_ids=score_ids)
 
     metric_json = open(metric_file, "w")
     metric_json.write(json.dumps(all_metric_dict, indent=2))
 
-def evaluate(data_dir, prediction_dir, llm, split, n_tool, metric, tool_desc, tool_map, tool_output_type_map, tool_map_reverse, all_metric_dict, dependency_type, alignment = None):
+def evaluate(data_dir, prediction_dir, llm, split, n_tool, metric, tool_desc, tool_map, tool_output_type_map, tool_map_reverse, all_metric_dict, dependency_type, alignment = None, score_ids = None):
     if f"{split}_{n_tool}" in all_metric_dict:
         metric_dict = all_metric_dict[f"{split}_{n_tool}"]
     else:
@@ -309,7 +310,19 @@ def evaluate(data_dir, prediction_dir, llm, split, n_tool, metric, tool_desc, to
         id = data["id"]
         predcitions[id] = data
 
-    ids = set(labels.keys()).intersection(set(predcitions.keys()))
+    if score_ids is None:
+        ids = set(labels.keys()).intersection(set(predcitions.keys()))
+    else:
+        # Every listed task is scored. One the model gave no usable answer
+        # for scores as an empty graph instead of silently leaving the
+        # sample, which would score a model on only the tasks it answered.
+        with open(score_ids, "r") as ids_rf:
+            wanted = {json.loads(line)["id"] for line in ids_rf if line.strip()}
+        ids = set(labels.keys()).intersection(wanted)
+        missing = ids - set(predcitions.keys())
+        for id in missing:
+            predcitions[id] = {"id": id, "result": {"task_steps": [], "task_nodes": [], "task_links": []}}
+        logger.info(f"Scored ids: {len(ids)}, of which without a prediction: {len(missing)}")
     labels = {id: labels[id] for id in ids}
     predcitions = {id: predcitions[id] for id in ids}
 
